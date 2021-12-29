@@ -1,0 +1,154 @@
+#include "LoRaWan_APP.h"
+#include "Arduino.h"
+
+#define time_deepsleep 3000
+static TimerEvent_t wakeUp;
+int voltaje =GPIO3;
+#include "DHT.h"
+
+#define DHTPIN GPIO1     // Pin donde está conectado el sensor
+#define DHTTYPE DHT11   // Descomentar si se usa el DHT 11
+DHT dht(DHTPIN, DHTTYPE);
+
+#ifndef LoraWan_RGB
+#define LoraWan_RGB 0
+#endif
+
+#define RF_FREQUENCY                                923000000 // Hz
+
+#define TX_OUTPUT_POWER                             14        // dBm
+
+#define LORA_BANDWIDTH                              0         // [0: 125 kHz,
+                                                              //  1: 250 kHz,
+                                                              //  2: 500 kHz,
+                                                              //  3: Reserved]
+#define LORA_SPREADING_FACTOR                       7         // [SF7..SF12]
+
+#define LORA_CODINGRATE                             1         // [1: 4/5,
+                                                              //  2: 4/6,
+                                                              //  3: 4/7,
+                                                              //  4: 4/8]
+#define LORA_PREAMBLE_LENGTH                        8         // Same for Tx and Rx
+#define LORA_SYMBOL_TIMEOUT                         0         // Symbols
+#define LORA_FIX_LENGTH_PAYLOAD_ON                  false
+#define LORA_IQ_INVERSION_ON                        false
+
+
+#define RX_TIMEOUT_VALUE                            1000
+#define BUFFER_SIZE                                 30 // Define the payload size here
+
+char txpacket[BUFFER_SIZE];
+char rxpacket[BUFFER_SIZE];
+char x[8];
+
+static RadioEvents_t RadioEvents;
+void OnTxDone( void );
+int16_t rssi,rxSize;
+//void  DoubleToString( char *str, double double_num,unsigned int len);
+
+typedef enum
+{
+    LOWPOWER,
+    TX,
+    wait
+}States_t;
+
+int16_t txNumber;
+States_t state;
+bool sleepMode = false;
+bool TX_done_flag = false;
+
+
+
+void onWakeUp()
+{
+  Serial.printf("Woke up");
+  leer_sensor();
+  state=TX;
+}
+void leer_sensor(){
+  pinMode(voltaje,OUTPUT);
+  digitalWrite(voltaje,HIGH);
+ dht.begin();
+  //char x[8];
+ float t = dht.readTemperature(); //Leemos la temperatura en grados Celsius
+ dtostrf(t,5,2,x);
+  //--------Enviamos las lecturas por el puerto serial-------------
+  
+  Serial.print("Temperatura: ");
+ 
+  Serial.print(x);
+  
+}
+void setup() {
+    Serial.begin(115200);
+pinMode(voltaje,OUTPUT);
+    txNumber=0;
+   rssi=0;
+
+    RadioEvents.TxDone = OnTxDone;
+    
+    Radio.Init( &RadioEvents );
+    Radio.SetChannel( RF_FREQUENCY );
+    Radio.SetTxConfig( MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH,
+                                   LORA_SPREADING_FACTOR, LORA_CODINGRATE,
+                                   LORA_PREAMBLE_LENGTH, LORA_FIX_LENGTH_PAYLOAD_ON,
+                                   true, 0, 0, LORA_IQ_INVERSION_ON, 3000 );
+
+    state=TX;
+    TimerInit( &wakeUp, onWakeUp );
+}
+
+
+
+void loop()
+{
+  switch(state)
+  {
+    case TX:
+      delay(100);
+      txNumber++;
+        sprintf(txpacket,"temeratura es :%s C ",x);
+       // sprintf(txpacket,"%s","hello");
+        //sprintf(txpacket+strlen(txpacket),"%d",txNumber);
+        
+       //
+       turnOnRGB(COLOR_SEND,0);
+
+        Serial.printf("\r\nsending packet \"%s\" , length %d\r\n",txpacket, strlen(txpacket));
+
+        Radio.Send( (uint8_t *)txpacket, strlen(txpacket) );
+        state=wait;
+        break;
+      case wait:
+         if (TX_done_flag) //tX done
+        { 
+        Serial.println("into sleep  mode");
+          turnOffRGB();
+          
+          Radio.Sleep( );
+          TX_done_flag= false; //reset Flag
+
+          TimerSetValue( &wakeUp, time_deepsleep );//Set wakeup timer
+          TimerStart( &wakeUp );//start timer
+          state=LOWPOWER; 
+          
+         }
+         
+        break;           
+    case LOWPOWER:
+      lowPowerHandler();
+        break;
+        default:
+            break;
+  }
+    Radio.IrqProcess( );
+}
+
+void OnTxDone( void )
+{
+  Serial.print("TX done......");
+  turnOnRGB(0,0);
+  TX_done_flag=true;
+  state=wait;
+}
